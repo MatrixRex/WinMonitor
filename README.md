@@ -1,6 +1,6 @@
 # WinMonitor
 
-![Version](https://img.shields.io/badge/version-1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Build](https://img.shields.io/github/actions/workflow/status/USERNAME/WinMonitor/build.yml)
 
@@ -10,7 +10,7 @@ A lightweight, elegant, and non-intrusive hardware system monitor for Windows. I
 
 ## Features
 - **Real-Time Data**: Dynamic text display showing CPU%, RAM%, GPU% (if available), network speeds (Upload/Download), and per-drive disk performance active times.
-- **Disk Performance**: Real-time read (↑) and write (↓) performance percentages for each physical drive (e.g. `C: ↑ 0% ↓ 5%`) utilizing Windows performance counters.
+- **Disk Performance & Drive Selection**: Real-time read (↑) and write (↓) performance percentages for each physical drive (e.g. `C: ↑ 0% ↓ 5%`). Toggle visibility of individual drives (e.g. show only `D:` drive) from **Select Disks** in the right-click menu.
 - **Customizable Module Visibility**: Choose what information you want to see. Toggle individual modules (CPU, RAM, Disk, GPU, Network) on/off directly from the right-click context menu.
 - **Configuration Persistence**: Your customized visibility settings are automatically saved locally to `winmonitor_config.json` and persist across application runs.
 - **Temperatures**: Displays CPU package and GPU core temperatures (via CoreTemp, LibreHardwareMonitor, or OpenHardwareMonitor).
@@ -18,7 +18,7 @@ A lightweight, elegant, and non-intrusive hardware system monitor for Windows. I
 - **Auto-Sizing**: Automatically shrinks or grows to fit the active text perfectly.
 - **Fixed Right Anchor**: Auto-resizes from the left side, keeping the right edge fixed exactly where you position it.
 - **Always on Top**: The status bar stays above other windows so you can always see your system stats.
-- **Auto-Run**: Toggle "Start with Windows" directly from the right-click menu to enable/disable starting on boot.
+- **Auto-Run**: Toggle "Startup App" directly from the right-click menu to enable/disable starting on boot.
 - **Lightweight**: Minimal CPU and RAM footprint.
 
 ## Requirements
@@ -65,7 +65,7 @@ WinMonitor provides three ways to start automatically when you log into Windows:
 ### Method 1: Built-in Toggle (Recommended & Easiest)
 1. Run `WinMonitor` (either the compiled `WinMonitor.exe` or via the Python script).
 2. **Right-click** the floating bar.
-3. Select **"Start with Windows"** to enable it. This automatically registers the application in the Windows Registry.
+3. Select **"Startup App"** to enable it. This automatically registers the application in the Windows Registry.
 
 ### Method 2: Windows Startup Folder (Manual Shortcut)
 If you do not want to use the registry or prefer a standard shortcut:

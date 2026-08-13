@@ -11,7 +11,10 @@ import ctypes
 import math
 
 try:
-    import pynvml
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import pynvml
     pynvml.nvmlInit()
     gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
     HAS_GPU = True
@@ -40,7 +43,7 @@ except Exception:
 
 UPDATE_MS = 2000  # update interval
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 state = {
     'cpu_percent': 0.0,
@@ -56,6 +59,7 @@ state = {
     'show_gpu': True,
     'show_disk': True,
     'show_network': True,
+    'disabled_disks': [],
     'running': True,
     'temp_threshold': 80.0,
     'collapsed_mode': True,
@@ -77,6 +81,7 @@ def load_config():
                 state['show_gpu'] = data.get('show_gpu', True)
                 state['show_disk'] = data.get('show_disk', True)
                 state['show_network'] = data.get('show_network', True)
+                state['disabled_disks'] = data.get('disabled_disks', [])
                 state['temp_threshold'] = data.get('temp_threshold', 80.0)
                 state['collapsed_mode'] = data.get('collapsed_mode', True)
     except Exception as e:
@@ -90,6 +95,7 @@ def save_config():
             'show_gpu': state['show_gpu'],
             'show_disk': state['show_disk'],
             'show_network': state['show_network'],
+            'disabled_disks': state['disabled_disks'],
             'temp_threshold': state['temp_threshold'],
             'collapsed_mode': state['collapsed_mode']
         }
@@ -106,6 +112,17 @@ def save_config():
 def toggle_module(module):
     key = f"show_{module}"
     state[key] = not state[key]
+    save_config()
+    if root and canvas:
+        root.after(0, lambda: draw_bar(canvas))
+
+def toggle_disk(label):
+    disabled = state.get('disabled_disks', [])
+    if label in disabled:
+        disabled.remove(label)
+    else:
+        disabled.append(label)
+    state['disabled_disks'] = disabled
     save_config()
     if root and canvas:
         root.after(0, lambda: draw_bar(canvas))
@@ -384,7 +401,9 @@ def draw_bar(canvas):
             
         if state.get('show_disk', True):
             disks = state.get('disks', [])
-            for i, disk in enumerate(disks):
+            disabled = state.get('disabled_disks', [])
+            visible_disks = [d for d in disks if d['label'] not in disabled]
+            for i, disk in enumerate(visible_disks):
                 if i == 0:
                     add_divider()
                 else:
@@ -615,8 +634,11 @@ def update_loop():
         if tooltip:
             tooltip += "\n"
         if state.get('show_disk', True) and disks_data:
-            disk_strs = [f"{d['label']}: ↑{d['read']:.0f}% ↓{d['write']:.0f}%" for d in disks_data]
-            tooltip += f"Disks: {' '.join(disk_strs)}\n"
+            disabled = state.get('disabled_disks', [])
+            visible_disks = [d for d in disks_data if d['label'] not in disabled]
+            if visible_disks:
+                disk_strs = [f"{d['label']}: ↑{d['read']:.0f}% ↓{d['write']:.0f}%" for d in visible_disks]
+                tooltip += f"Disks: {' '.join(disk_strs)}\n"
         if state.get('show_gpu', True) and HAS_GPU and gpu_percent is not None:
             tooltip += f"GPU: {gpu_percent:.0f}%"
             if gpu_temp:
@@ -651,8 +673,10 @@ if __name__ == '__main__':
 
             
     main_root = tk.Tk()
+    main_root.title("WinMonitor")
     main_root.withdraw()
     root = tk.Toplevel(main_root)
+    root.title("WinMonitor")
     root.overrideredirect(True)
     
     # Dimensions: start with a standard width, will auto-resize instantly
@@ -672,12 +696,16 @@ if __name__ == '__main__':
         WS_EX_APPWINDOW = 0x00040000
         WS_EX_TOOLWINDOW = 0x00000080
         hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        style = style & ~WS_EX_APPWINDOW
-        style = style | WS_EX_TOOLWINDOW
-        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-    except Exception:
-        pass
+        if not hwnd:
+            hwnd = root.winfo_id()
+        if hwnd:
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            style = (style & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+            ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+    except Exception as e:
+        print("Failed to hide taskbar icon:", e)
 
     root.attributes('-topmost', True)
     root.lift()
@@ -728,6 +756,9 @@ if __name__ == '__main__':
     show_menu.add_checkbutton(label="Network", variable=show_network_var, command=lambda: toggle_module('network'))
     
     menu.add_cascade(label="Show Modules", menu=show_menu)
+    
+    select_disks_menu = tk.Menu(menu, tearoff=0)
+    menu.add_cascade(label="Select Disks", menu=select_disks_menu)
     menu.add_separator()
     
     collapsed_var = tk.BooleanVar(value=state['collapsed_mode'])
@@ -737,7 +768,7 @@ if __name__ == '__main__':
     menu.add_separator()
     
     autorun_var = tk.BooleanVar(value=is_autorun_enabled())
-    menu.add_checkbutton(label="Start with Windows", variable=autorun_var, command=toggle_autorun)
+    menu.add_checkbutton(label="Startup App", variable=autorun_var, command=toggle_autorun)
     menu.add_separator()
     menu.add_command(label="Exit", command=on_exit_from_gui)
     
@@ -750,6 +781,35 @@ if __name__ == '__main__':
         show_gpu_var.set(state['show_gpu'])
         show_network_var.set(state['show_network'])
         collapsed_var.set(state['collapsed_mode'])
+        
+        # Dynamically populate Select Disks menu
+        select_disks_menu.delete(0, 'end')
+        select_disks_menu._vars = []
+        disks = state.get('disks', [])
+        disabled = state.get('disabled_disks', [])
+        
+        all_labels = []
+        for d in disks:
+            lbl = d['label']
+            if lbl not in all_labels:
+                all_labels.append(lbl)
+        for lbl in disabled:
+            if lbl not in all_labels:
+                all_labels.append(lbl)
+                
+        if not all_labels:
+            select_disks_menu.add_command(label="No Disks Detected", state="disabled")
+        else:
+            for lbl in sorted(all_labels):
+                display_name = f"{lbl}:" if not lbl.endswith(":") else lbl
+                var = tk.BooleanVar(value=(lbl not in disabled))
+                select_disks_menu._vars.append(var)
+                select_disks_menu.add_checkbutton(
+                    label=display_name,
+                    variable=var,
+                    command=lambda l=lbl: toggle_disk(l)
+                )
+                
         menu.post(event.x_root, event.y_root)
         
     canvas.bind("<Button-3>", show_context_menu)

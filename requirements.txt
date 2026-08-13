@@ -1,6 +1,5 @@
 psutil
-pynvml
+nvidia-ml-py
 wmi
 pypiwin32
 pillow
-
