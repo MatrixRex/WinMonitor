@@ -41,6 +41,12 @@ try:
 except Exception:
     HAS_PDH = False
 
+try:
+    import pystray
+    HAS_TRAY = True
+except Exception:
+    HAS_TRAY = False
+
 UPDATE_MS = 2000  # update interval
 
 VERSION = "1.1"
@@ -63,6 +69,7 @@ state = {
     'running': True,
     'temp_threshold': 80.0,
     'collapsed_mode': True,
+    'show_bar': True,
     'expanded': False
 }
 
@@ -84,6 +91,7 @@ def load_config():
                 state['disabled_disks'] = data.get('disabled_disks', [])
                 state['temp_threshold'] = data.get('temp_threshold', 80.0)
                 state['collapsed_mode'] = data.get('collapsed_mode', True)
+                state['show_bar'] = data.get('show_bar', True)
     except Exception as e:
         print("Failed to load config:", e)
 
@@ -97,7 +105,8 @@ def save_config():
             'show_network': state['show_network'],
             'disabled_disks': state['disabled_disks'],
             'temp_threshold': state['temp_threshold'],
-            'collapsed_mode': state['collapsed_mode']
+            'collapsed_mode': state['collapsed_mode'],
+            'show_bar': state['show_bar']
         }
         try:
             with open(CONFIG_FILE, 'w') as f:
@@ -276,10 +285,10 @@ def make_gauge_icon(percent, size=(64, 64)):
     img = Image.new('RGBA', size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     try:
-        font_large = ImageFont.truetype("Segoe UI", 20)
+        font_large = ImageFont.truetype("segoeuib.ttf", 30)
     except Exception:
         try:
-            font_large = ImageFont.truetype("seguisym.ttf", 20)
+            font_large = ImageFont.truetype("seguisym.ttf", 30)
         except Exception:
             font_large = ImageFont.load_default()
 
@@ -295,19 +304,17 @@ def make_gauge_icon(percent, size=(64, 64)):
     if percent > 0:
         draw.arc((cx - radius, cy - radius, cx + radius, cy + radius), start=start, end=end, fill=(255, 255, 255, 255), width=4)
 
-    # Percentage text
-    pct_text = f"{int(percent)}"
+    # Percentage text, centered on the ink bounds (bbox offsets matter: the
+    # text origin is not the top-left of the glyphs)
+    pct_text = f"{min(int(percent), 99)}"
     try:
         bbox = draw.textbbox((0, 0), pct_text, font=font_large)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
+        tx = cx - (bbox[0] + bbox[2]) / 2
+        ty = cy - (bbox[1] + bbox[3]) / 2
     except Exception:
-        try:
-            tw, th = font_large.getsize(pct_text)
-        except Exception:
-            tw, th = 15, 15
-            
-    draw.text((cx - tw / 2, cy - th / 2 - 2), pct_text, font=font_large, fill=(255, 255, 255, 255))
+        tx, ty = cx - 8, cy - 8
+
+    draw.text((tx, ty), pct_text, font=font_large, fill=(255, 255, 255, 255))
 
     return img
 
@@ -449,7 +456,11 @@ def draw_bar(canvas):
         if right_edge_anchor is None:
             right_edge_anchor = root.winfo_x() + root.winfo_width()
         new_x = int(right_edge_anchor - new_win_w)
-        root.geometry(f"{int(new_win_w)}x24+{new_x}+{int(bar_y)}")
+        root._bar_w = int(new_win_w)
+        geo = f"{int(new_win_w)}x24+{new_x}+{int(bar_y)}"
+        if getattr(root, '_last_geo', None) != geo:
+            root._last_geo = geo
+            root.geometry(geo)
 
 
 flash_state = False
@@ -494,22 +505,36 @@ def set_temp_threshold_dialog():
         state['temp_threshold'] = new_val
         save_config()
 
+collapse_job = None
+
 def on_enter(event):
-    if state.get('collapsed_mode', True):
+    global collapse_job
+    if collapse_job is not None:
+        root.after_cancel(collapse_job)
+        collapse_job = None
+    if state.get('collapsed_mode', True) and not state['expanded']:
         state['expanded'] = True
         draw_bar(canvas)
 
+def _collapse_if_outside():
+    global collapse_job
+    collapse_job = None
+    if not state.get('collapsed_mode', True) or not state['expanded']:
+        return
+    root.update_idletasks()  # make sure geometry is current before hit-testing
+    x, y = root.winfo_rootx(), root.winfo_rooty()
+    w, h = root.winfo_width(), root.winfo_height()
+    mx, my = root.winfo_pointerxy()
+    if not (x <= mx < x + w and y <= my < y + h):
+        state['expanded'] = False
+        draw_bar(canvas)
+
 def on_leave(event):
-    if state.get('collapsed_mode', True):
-        if root:
-            x = root.winfo_x()
-            y = root.winfo_y()
-            w = root.winfo_width()
-            h = root.winfo_height()
-            mx, my = root.winfo_pointerxy()
-            if not (x <= mx <= x + w and y <= my <= y + h):
-                state['expanded'] = False
-                draw_bar(canvas)
+    # Resizing the window fires spurious <Leave>/<Enter> events; wait briefly and
+    # re-check the real pointer position instead of collapsing immediately.
+    global collapse_job
+    if state.get('collapsed_mode', True) and collapse_job is None:
+        collapse_job = root.after(150, _collapse_if_outside)
 
 def toggle_collapsed_mode(icon=None, item=None):
     state['collapsed_mode'] = not state['collapsed_mode']
@@ -524,8 +549,9 @@ def toggle_collapsed_mode(icon=None, item=None):
 def refresh_bar_ui():
     if not state['running'] or canvas is None:
         return
-    draw_bar(canvas)
-    if root:
+    if root and state.get('show_bar', True):
+        draw_bar(canvas)
+        apply_toolwindow_style()
         root.attributes('-topmost', True)
         root.lift()
         try:
@@ -649,8 +675,14 @@ def update_loop():
         tooltip = tooltip.strip()
         if not tooltip:
             tooltip = "WinMonitor"
-            
 
+        if icon is not None:
+            try:
+                if img is not None:
+                    icon.icon = img
+                icon.title = tooltip[:127]  # Windows tray tooltip limit
+            except Exception:
+                pass
 
         time.sleep(UPDATE_MS / 1000.0)
         
@@ -666,7 +698,97 @@ def update_loop():
 
 def on_exit_from_gui():
     state['running'] = False
+    if icon is not None:
+        try:
+            icon.stop()
+        except Exception:
+            pass
     root.quit()
+
+
+def apply_toolwindow_style():
+    """Remove the taskbar button by making the bar a tool window."""
+    try:
+        GWL_EXSTYLE = -20
+        WS_EX_APPWINDOW = 0x00040000
+        WS_EX_TOOLWINDOW = 0x00000080
+        hwnd = ctypes.windll.user32.GetAncestor(root.winfo_id(), 2)  # GA_ROOT
+        if hwnd:
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            new_style = (style & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW
+            if new_style != style:
+                ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+                if ctypes.windll.user32.IsWindowVisible(hwnd):
+                    # Re-show so the taskbar drops the button
+                    ctypes.windll.user32.ShowWindow(hwnd, 0)
+                    ctypes.windll.user32.ShowWindow(hwnd, 5)
+    except Exception as e:
+        print("Failed to hide taskbar icon:", e)
+
+
+def apply_bar_visibility():
+    if not root:
+        return
+    if state['show_bar']:
+        root.deiconify()
+        apply_toolwindow_style()
+        root.attributes('-topmost', True)
+        draw_bar(canvas)
+    else:
+        root.withdraw()
+
+
+def toggle_bar(icon=None, item=None):
+    state['show_bar'] = not state['show_bar']
+    save_config()
+    root.after(0, apply_bar_visibility)
+
+
+def tray_toggle_module(module):
+    def action(icon, item):
+        toggle_module(module)
+    return action
+
+
+def tray_module_checked(module):
+    return lambda item: state[f'show_{module}']
+
+
+def tray_toggle_collapsed(icon, item):
+    toggle_collapsed_mode()
+
+
+def tray_set_threshold(icon, item):
+    root.after(0, set_temp_threshold_dialog)
+
+
+def tray_exit(icon, item):
+    root.after(0, on_exit_from_gui)
+
+
+def start_tray():
+    global icon
+    if not HAS_TRAY:
+        print("pystray not installed; tray icon disabled.")
+        return
+    img = make_gauge_icon(0)
+    if img is None:
+        print("Pillow not installed; tray icon disabled.")
+        return
+    menu = pystray.Menu(
+        pystray.MenuItem("Show Floating Bar", toggle_bar, checked=lambda item: state['show_bar'], default=True),
+        pystray.MenuItem("Show Modules", pystray.Menu(
+            *[pystray.MenuItem(name, tray_toggle_module(key), checked=tray_module_checked(key))
+              for name, key in (("CPU", "cpu"), ("RAM", "ram"), ("Disk", "disk"), ("GPU", "gpu"), ("Network", "network"))]
+        )),
+        pystray.MenuItem("Collapsed Mode", tray_toggle_collapsed, checked=lambda item: state['collapsed_mode']),
+        pystray.MenuItem("Set Temp Threshold...", tray_set_threshold),
+        pystray.MenuItem("Startup App", toggle_autorun_from_tray, checked=lambda item: is_autorun_enabled()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Exit", tray_exit),
+    )
+    icon = pystray.Icon("WinMonitor", img, "WinMonitor", menu)
+    icon.run_detached()
 
 
 if __name__ == '__main__':
@@ -691,21 +813,7 @@ if __name__ == '__main__':
     root.geometry(f"{win_w}x{win_h}+{x}+{y}")
     root.update_idletasks()
     
-    try:
-        GWL_EXSTYLE = -20
-        WS_EX_APPWINDOW = 0x00040000
-        WS_EX_TOOLWINDOW = 0x00000080
-        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-        if not hwnd:
-            hwnd = root.winfo_id()
-        if hwnd:
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            style = (style & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW
-            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
-            ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
-    except Exception as e:
-        print("Failed to hide taskbar icon:", e)
+    apply_toolwindow_style()
 
     root.attributes('-topmost', True)
     root.lift()
@@ -714,18 +822,28 @@ if __name__ == '__main__':
     
     # Drag support
     def start_drag(event):
-        root._drag_start_x = event.x
-        root._drag_start_y = event.y
+        # Use absolute screen coords so dragging stays correct across monitors
+        # (event.x/y are relative to a canvas that moves/resizes while dragging)
+        root._drag_off_x = event.x_root - root.winfo_x()
+        root._drag_off_y = event.y_root - root.winfo_y()
 
     def drag(event):
         global right_edge_anchor, bar_y
-        x = root.winfo_x() + event.x - root._drag_start_x
-        y = root.winfo_y() + event.y - root._drag_start_y
-        root.geometry(f"+{x}+{y}")
+        x = event.x_root - root._drag_off_x
+        y = event.y_root - root._drag_off_y
+        root._last_geo = None
+        root.geometry(f"+{x}+{y}")  # negative values become "+-N", which Tk accepts
         # Keep track of where the right edge is anchored
-        right_edge_anchor = x + root.winfo_width()
+        # Use the width we asked for, not winfo_width(): across monitors with
+        # different DPI the reported width can differ, which shifts the anchor.
+        right_edge_anchor = x + getattr(root, '_bar_w', root.winfo_width())
         bar_y = y
-        
+
+    def end_drag(event):
+        # Re-apply the canonical geometry so expanded/collapsed share one anchor
+        root._last_geo = None
+        draw_bar(canvas)
+
     # Initialize the right edge anchor and Y position point
     right_edge_anchor = x + win_w
     bar_y = y
@@ -735,6 +853,7 @@ if __name__ == '__main__':
     
     canvas.bind("<ButtonPress-1>", start_drag)
     canvas.bind("<B1-Motion>", drag)
+    canvas.bind("<ButtonRelease-1>", end_drag)
     canvas.bind("<Enter>", on_enter)
     canvas.bind("<Leave>", on_leave)
     
@@ -814,6 +933,20 @@ if __name__ == '__main__':
         
     canvas.bind("<Button-3>", show_context_menu)
     
+    def on_close_request():
+        if icon is not None:
+            state['show_bar'] = False
+            save_config()
+            root.withdraw()
+        else:
+            on_exit_from_gui()
+
+    root.protocol("WM_DELETE_WINDOW", on_close_request)
+    main_root.protocol("WM_DELETE_WINDOW", on_close_request)
+    start_tray()
+    if not state['show_bar'] and icon is not None:
+        root.withdraw()
+
     # Start updater thread
     update_thread = threading.Thread(target=update_loop, daemon=True)
     update_thread.start()

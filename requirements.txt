@@ -3,3 +3,4 @@ nvidia-ml-py
 wmi
 pypiwin32
 pillow
+pystray
